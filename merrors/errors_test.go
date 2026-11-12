@@ -394,6 +394,22 @@ func TestErrors(t *testing.T) {
 		assert.True(t, stderrors.Is(formatted, sentinel))
 	})
 
+	t.Run("WrappingUnwrappedIdentityPreservesCustomIsIdentity", func(t *testing.T) {
+		original := newCustomIsErrorBuilder().SetMessage("custom").CaptureStack(1).Build()
+
+		inner := Unwrap(WrapMessage(original, "first"))
+		require.NotNil(t, inner)
+		require.IsType(t, &identityError{}, inner)
+		innerErr, ok := inner.(Error)
+		require.True(t, ok)
+		require.True(t, stderrors.Is(innerErr, original))
+
+		outer := WrapMessage(innerErr, "second")
+		assert.True(t, stderrors.Is(outer, original))
+		assert.NotEmpty(t, outer.StackFrames())
+		assert.True(t, stderrors.Is(innerErr.WithoutStack(), original))
+	})
+
 	t.Run("WrapAfterWithoutStackPreservesIdentity", func(t *testing.T) {
 		original := NewErrorBuilder().SetMessage("original").Build()
 		stackless := original.WithoutStack()

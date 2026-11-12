@@ -254,6 +254,13 @@ func (e *identityError) Unwrap() error {
 	return e.errorValue
 }
 
+// WithoutStack returns the adapter unchanged: it is already the stack-less
+// view that preserves the original error's identity. Delegating this method to
+// the embedded error would discard identityError.original.
+func (e *identityError) WithoutStack() Error {
+	return e
+}
+
 // hasStack reports the truth for the stack-less clone this wrapper preserves:
 // identityError exists precisely to keep identity after WithoutStack.
 func (e *identityError) hasStack() bool {
@@ -434,7 +441,11 @@ func (b *BaseErrorBuilder[B, T]) Wrap(wrappedErr error) B {
 	if errWithStack, ok := wrappedErr.(hasStackFrames); ok {
 		b.errForStack = stackFramesProviderForWrapped(errWithStack)
 	}
-	if errWithStack, ok := wrappedErr.(Error); ok {
+	if inner, ok := wrappedErr.(*identityError); ok {
+		// The error is already a stack-less identity adapter. Keep it instead
+		// of nesting another adapter and losing its original error.
+		b.wrappedErr = inner
+	} else if errWithStack, ok := wrappedErr.(Error); ok {
 		b.wrappedErr = &identityError{
 			errorValue: errWithStack.WithoutStack(),
 			original:   wrappedErr,
