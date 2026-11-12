@@ -183,12 +183,6 @@ func (c *BaseError[T]) WithoutStack() Error {
 	return clone
 }
 
-// ownStackFrames exposes the provider to Wrap so derived errors can share the
-// same lazy materialization instead of re-reading the source.
-func (e *BaseError[T]) ownStackFrames() *stackFramesProvider {
-	return e.errForStack
-}
-
 // Returns just the error message without augmenting it.
 //
 // When this error is copied with Wrap, the Message() method will
@@ -259,12 +253,6 @@ func (e *identityError) Unwrap() error {
 // the embedded error would discard identityError.original.
 func (e *identityError) WithoutStack() Error {
 	return e
-}
-
-// hasStack reports the truth for the stack-less clone this wrapper preserves:
-// identityError exists precisely to keep identity after WithoutStack.
-func (e *identityError) hasStack() bool {
-	return false
 }
 
 // Is preserves matching against the error this stack-less clone replaced.

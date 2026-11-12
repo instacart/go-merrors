@@ -51,7 +51,7 @@ func (e *panicError) StackFrames() []errors.StackFrame {
 // resolution, so an inlined panic site is reported as the function that
 // panicked rather than its outer caller.
 func (e *panicError) inlineAwareStackFrames() []errors.StackFrame {
-	if provider := e.BaseError.errForStack; provider != nil {
+	if provider := e.errForStack; provider != nil {
 		if source, ok := provider.source.(*errors.Error); ok {
 			return stackFramesFromPCs(source.Callers())
 		}
@@ -66,11 +66,16 @@ func stackFramesFromPCs(pcs []uintptr) []errors.StackFrame {
 		frame, more := iter.Next()
 		pkg, name := splitFunctionName(frame.Function)
 		frames = append(frames, errors.StackFrame{
-			File:           frame.File,
-			LineNumber:     frame.Line,
-			Name:           name,
-			Package:        pkg,
-			ProgramCounter: frame.PC,
+			File:       frame.File,
+			LineNumber: frame.Line,
+			Name:       name,
+			Package:    pkg,
+			// CallersFrames has already adjusted PC to locate the calling
+			// instruction. Store the original return address so a consumer
+			// resolving these frames again (for example an error-reporting
+			// SDK) does not decrement it a second time and lose inline-frame
+			// deduplication.
+			ProgramCounter: frame.PC + 1,
 		})
 		if !more {
 			break
