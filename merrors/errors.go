@@ -144,6 +144,34 @@ func (e *BaseError[T]) Unwrap() error {
 	return e.wrappedErr
 }
 
+// errorValue is an embedded alias for Error whose field name does not collide
+// with the Error method.
+type errorValue interface {
+	Error
+}
+
+// identityError preserves the identity of the error replaced by a stack-less
+// clone even when a custom error type shadows BaseError.Is with its own Is.
+// It is placed in the unwrap chain by Wrap.
+type identityError struct {
+	errorValue
+	original error
+}
+
+func (e *identityError) Is(target error) bool {
+	if target == e.original {
+		return true
+	}
+	if iser, ok := e.errorValue.(interface{ Is(error) bool }); ok {
+		return iser.Is(target)
+	}
+	return false
+}
+
+func (e *identityError) Unwrap() error {
+	return e.errorValue
+}
+
 // Is preserves matching against the error this stack-less clone replaced.
 // It intentionally does not recursively search the original error's chain:
 // Unwrap already walks that chain, and searching it here as well makes repeated
@@ -309,7 +337,10 @@ func (b *BaseErrorBuilder[B, T]) Wrap(wrappedErr error) B {
 		b.errForStack = newStackFramesProvider(errWithStack)
 	}
 	if errWithStack, ok := wrappedErr.(Error); ok {
-		b.wrappedErr = errWithStack.WithoutStack()
+		b.wrappedErr = &identityError{
+			errorValue: errWithStack.WithoutStack(),
+			original:   wrappedErr,
+		}
 	}
 
 	var msg string

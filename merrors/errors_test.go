@@ -19,6 +19,27 @@ func (e stackFrameError) Error() string { return "stack frame error" }
 
 func (e stackFrameError) StackFrames() []goerr.StackFrame { return e.frames }
 
+type customIsSentinel struct{}
+
+func (s *customIsSentinel) Error() string { return "custom sentinel" }
+
+type customIsError struct {
+	BaseError[*customIsError]
+}
+
+func (e *customIsError) Is(target error) bool {
+	_, ok := target.(*customIsSentinel)
+	return ok
+}
+
+type customIsErrorBuilder struct {
+	BaseErrorBuilder[*customIsErrorBuilder, *customIsError]
+}
+
+func newCustomIsErrorBuilder() *customIsErrorBuilder {
+	return InitBaseErrorBuilder(&customIsErrorBuilder{}, func() *customIsError { return &customIsError{} })
+}
+
 func TestErrors(t *testing.T) {
 	normalizeStack := func(stack string) string {
 		stack = regexp.MustCompile("\n\t.*/errors_test.go:").ReplaceAllString(stack, "\n\t/root/errors_test.go:")
@@ -293,6 +314,25 @@ func TestErrors(t *testing.T) {
 	t.Run("WrapStackedErrorReturnsSame", func(t *testing.T) {
 		original := New("cause")
 		assert.Same(t, original, Wrap(original))
+	})
+
+	t.Run("WrapPreservesIdentityWithCustomIs", func(t *testing.T) {
+		original := newCustomIsErrorBuilder().SetMessage("custom").CaptureStack(1).Build()
+		sentinel := &customIsSentinel{}
+
+		assert.True(t, stderrors.Is(original, sentinel))
+		assert.True(t, stderrors.Is(original, original))
+
+		wrapped := WrapMessage(original, "context")
+		assert.True(t, stderrors.Is(wrapped, original))
+		assert.True(t, stderrors.Is(wrapped, sentinel))
+
+		var target *customIsError
+		assert.True(t, stderrors.As(wrapped, &target))
+
+		formatted := Errorf("context: %w", original)
+		assert.True(t, stderrors.Is(formatted, original))
+		assert.True(t, stderrors.Is(formatted, sentinel))
 	})
 
 	t.Run("WrapAfterWithoutStackPreservesIdentity", func(t *testing.T) {
