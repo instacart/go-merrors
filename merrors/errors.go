@@ -154,25 +154,44 @@ func (e *BaseError[T]) Format(s fmt.State, verb rune) {
 
 // FormatErrorStack returns the error message and
 // first non empty stack trace formatted for logging purposes.
+//
+// The stack is searched for in err and then down its unwrap chain. Errors
+// holding multiple children (errors.Join, fmt.Errorf with several %w verbs)
+// are searched in child order, depth-first.
 func FormatErrorStack(err error) string {
 	var b strings.Builder
 	b.WriteString(err.Error())
-	// Looking for the first non empty stack frame slice.
+	for _, frame := range firstStackFrames(err) {
+		b.WriteString(fmt.Sprintf("\n%s.%s\n\t%s:%d", frame.Package, frame.Name, frame.File, frame.LineNumber))
+	}
+	return b.String()
+}
+
+// firstStackFrames returns the first non empty stack found in err's unwrap
+// tree, searching the children of multi errors (errors.Join, multiple %w
+// verbs) in order.
+func firstStackFrames(err error) []errors.StackFrame {
 	for err != nil {
-		castErr, ok := err.(hasStackFrames)
-		if ok {
-			frames := castErr.StackFrames()
-			if len(frames) > 0 {
-				for _, frame := range castErr.StackFrames() {
-					b.WriteString(fmt.Sprintf("\n%s.%s\n\t%s:%d", frame.Package, frame.Name, frame.File, frame.LineNumber))
-				}
-				break
+		if castErr, ok := err.(hasStackFrames); ok {
+			if frames := castErr.StackFrames(); len(frames) > 0 {
+				return frames
 			}
 		}
-		err = errors.Unwrap(err)
+		switch unwrapped := err.(type) {
+		case interface{ Unwrap() error }:
+			err = unwrapped.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, child := range unwrapped.Unwrap() {
+				if frames := firstStackFrames(child); len(frames) > 0 {
+					return frames
+				}
+			}
+			return nil
+		default:
+			return nil
+		}
 	}
-
-	return b.String()
+	return nil
 }
 
 func (e *BaseError[T]) StackFrames() []errors.StackFrame {
@@ -244,7 +263,10 @@ func (b *BaseErrorBuilder[B, T]) Wrap(wrappedErr error) B {
 	if goErr, ok := wrappedErr.(*errors.Error); ok {
 		b.wrappedErr = errors.Unwrap(goErr)
 	}
-	if errWithStack, ok := wrappedErr.(hasStackFrames); ok {
+	// Only adopt the wrapped error's stack if it actually has frames. An
+	// explicitly stack-less error (e.g. original.WithoutStack()) must not
+	// suppress the stack captured by Build.
+	if errWithStack, ok := wrappedErr.(hasStackFrames); ok && len(errWithStack.StackFrames()) > 0 {
 		b.errForStack = errWithStack
 	}
 	if errWithStack, ok := wrappedErr.(Error); ok {

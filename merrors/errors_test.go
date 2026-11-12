@@ -162,6 +162,49 @@ func TestErrors(t *testing.T) {
 		assert.Equal(t, FormatErrorStack(err), "std")
 	})
 
+	t.Run("FormatErrorStackMultiError", func(t *testing.T) {
+		// The first child has no stack; the stack must be found in the second.
+		joined := stderrors.Join(stderrors.New("other"), NewErrorBuilder().SetMessage("merrors").Build())
+		formatted := normalizeStack(FormatErrorStack(joined))
+		assert.Contains(t, formatted, "merrors")
+		assert.Contains(t, formatted,
+			"github.com/instacart/go-merrors/merrors.TestErrors.funcN\n"+
+				"\t/root/errors_test.go:",
+		)
+
+		// Multiple %w verbs produce an Unwrap() []error as well.
+		multiWrapped := fmt.Errorf("%w: %w", stderrors.New("first"), NewErrorBuilder().SetMessage("merrors").Build())
+		formatted = normalizeStack(FormatErrorStack(multiWrapped))
+		assert.Contains(t, formatted, "merrors")
+		assert.Contains(t, formatted,
+			"github.com/instacart/go-merrors/merrors.TestErrors.funcN\n"+
+				"\t/root/errors_test.go:",
+		)
+
+		// A nested multi error is searched depth-first.
+		nested := fmt.Errorf("outer: %w", stderrors.Join(stderrors.New("other"), Errorf("nested merrors")))
+		formatted = normalizeStack(FormatErrorStack(nested))
+		assert.Contains(t, formatted, "nested merrors")
+		assert.Contains(t, formatted,
+			"github.com/instacart/go-merrors/merrors.TestErrors.funcN\n"+
+				"\t/root/errors_test.go:",
+		)
+	})
+
+	t.Run("WrapWithoutStack", func(t *testing.T) {
+		original := NewErrorBuilder().SetMessage("original").Build()
+		assert.Len(t, original.WithoutStack().StackFrames(), 0)
+
+		err := NewErrorBuilder().Wrap(original.WithoutStack()).Build()
+		assert.Equal(t, "original", err.Error())
+		// A stack-less wrapped error must not suppress the captured stack.
+		assert.Greater(t, len(err.StackFrames()), 0)
+
+		err = WrapMessage(original.WithoutStack(), "message")
+		assert.Equal(t, "original\nmessage", err.Error())
+		assert.Greater(t, len(err.StackFrames()), 0)
+	})
+
 	t.Run("SetMessage", func(t *testing.T) {
 		err := NewErrorBuilder().SetMessage("message").Build()
 		assert.Equal(t, "message", err.Error())
