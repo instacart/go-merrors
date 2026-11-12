@@ -10,6 +10,7 @@ import (
 
 	goerr "github.com/go-errors/errors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type stackFrameError struct {
@@ -429,6 +430,20 @@ func TestErrors(t *testing.T) {
 		}
 		close(start)
 		wg.Wait()
+	})
+
+	t.Run("WrappingIdentityErrorCapturesStack", func(t *testing.T) {
+		// Unwrap(WrapMessage(...)) is an identityError, which is stack-less.
+		// Wrapping it must not adopt an empty provider and suppress CaptureStack.
+		cause := Unwrap(WrapMessage(New("cause"), "context"))
+		require.NotNil(t, cause)
+
+		stacked, ok := cause.(interface{ StackFrames() []goerr.StackFrame })
+		require.True(t, ok)
+		assert.Empty(t, stacked.StackFrames())
+
+		wrapped := WrapMessage(cause, "retry")
+		assert.NotEmpty(t, wrapped.StackFrames())
 	})
 
 	t.Run("ReentrantExternalStackFramesDoesNotDeadlock", func(t *testing.T) {

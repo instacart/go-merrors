@@ -238,6 +238,12 @@ func (e *identityError) Unwrap() error {
 	return e.errorValue
 }
 
+// hasStack reports the truth for the stack-less clone this wrapper preserves:
+// identityError exists precisely to keep identity after WithoutStack.
+func (e *identityError) hasStack() bool {
+	return false
+}
+
 // Is preserves matching against the error this stack-less clone replaced.
 // It intentionally does not recursively search the original error's chain:
 // Unwrap already walks that chain, and searching it here as well makes repeated
