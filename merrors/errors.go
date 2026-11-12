@@ -17,21 +17,17 @@ type hasStackFrames interface {
 
 // stackFramesProvider materializes the frames of a stack source exactly once.
 //
-// go-errors fills its frame cache lazily and without synchronization, so calling
-// StackFrames on the same source from several goroutines races. Errors built by
-// this package share one provider per stack: an error and every clone derived
-// from it hold the same pointer, and the Once serializes the first lookup.
+// Errors built by this package share one provider per stack: an error and every
+// clone derived from it hold the same pointer, and the Once serializes the first
+// lookup of a source whose frames are not already cached. External sources can
+// cache their frames eagerly in the provider, in which case StackFrames returns
+// the saved slice without touching the source again.
 type stackFramesProvider struct {
-	source hasStackFrames
-	frames []errors.StackFrame
-	once   sync.Once
+	source       hasStackFrames
+	frames       []errors.StackFrame
+	cachedFrames bool
+	once         sync.Once
 }
-
-// externalStackFramesMu serializes the initial StackFrames lookup for sources
-// not created by this package. External implementations (notably go-errors)
-// may materialize their cache without synchronization, so two wrappers of the
-// same external sentinel must not call it concurrently.
-var externalStackFramesMu sync.Mutex
 
 // newCapturedStackFramesProvider lazily wraps a stack created by this package.
 // Nobody outside can share this source, so the provider Once is sufficient.
@@ -42,9 +38,20 @@ func newCapturedStackFramesProvider(source hasStackFrames) *stackFramesProvider 
 	return &stackFramesProvider{source: source}
 }
 
-// newExternalStackFramesProvider materializes an external source's frames
-// under the package lock so concurrent Wrap calls cannot race its lazy cache.
-// It returns nil when the source has no frames.
+// externalStackFramesMu serializes the first StackFrames call on external
+// sources. go-errors initializes its frame cache lazily and without
+// synchronization, so concurrent Wrap calls on the same source would race it.
+// The lock covers only the eager materialization at wrap time; StackFrames on
+// the resulting provider serves cached frames without taking it.
+var externalStackFramesMu sync.Mutex
+
+// newExternalStackFramesProvider saves an external source's frames while it is
+// being wrapped.
+//
+// go-errors initializes its frame cache on the first StackFrames call. Doing
+// that call here is a workaround for that lazy initialization: the provider
+// then serves the saved frames during logging without re-entering the external
+// cache. It returns nil when the source has no frames.
 func newExternalStackFramesProvider(source hasStackFrames) *stackFramesProvider {
 	externalStackFramesMu.Lock()
 	frames := source.StackFrames()
@@ -53,11 +60,11 @@ func newExternalStackFramesProvider(source hasStackFrames) *stackFramesProvider 
 	if len(frames) == 0 {
 		return nil
 	}
-	provider := &stackFramesProvider{source: source}
-	provider.once.Do(func() {
-		provider.frames = frames
-	})
-	return provider
+	return &stackFramesProvider{
+		source:       source,
+		frames:       frames,
+		cachedFrames: true,
+	}
 }
 
 // stackFramesProviderForWrapped preserves the concrete error's StackFrames
@@ -74,6 +81,9 @@ func stackFramesProviderForWrapped(source hasStackFrames) *stackFramesProvider {
 }
 
 func (p *stackFramesProvider) StackFrames() []errors.StackFrame {
+	if p.cachedFrames {
+		return p.frames
+	}
 	p.once.Do(func() {
 		p.frames = p.source.StackFrames()
 	})
