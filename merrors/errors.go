@@ -81,10 +81,11 @@ func stackFramesProviderForWrapped(source hasStackFrames) *stackFramesProvider {
 }
 
 func (p *stackFramesProvider) StackFrames() []errors.StackFrame {
-	if p.cachedFrames {
-		return p.frames
-	}
 	p.once.Do(func() {
+		if p.cachedFrames {
+			return
+		}
+		p.cachedFrames = true
 		p.frames = p.source.StackFrames()
 	})
 	return p.frames
