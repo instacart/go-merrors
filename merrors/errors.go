@@ -38,11 +38,12 @@ func newCapturedStackFramesProvider(source hasStackFrames) *stackFramesProvider 
 	return &stackFramesProvider{source: source}
 }
 
-// externalStackFramesMu serializes the first StackFrames call on external
+// externalStackFramesMu serializes the first StackFrames call on go-errors
 // sources. go-errors initializes its frame cache lazily and without
 // synchronization, so concurrent Wrap calls on the same source would race it.
-// The lock covers only the eager materialization at wrap time; StackFrames on
-// the resulting provider serves cached frames without taking it.
+// The lock is held only for that known implementation, whose StackFrames does
+// not call back into this package; holding it across arbitrary external
+// callbacks could deadlock a reentrant wrapper.
 var externalStackFramesMu sync.Mutex
 
 // newExternalStackFramesProvider saves an external source's frames while it is
@@ -53,10 +54,20 @@ var externalStackFramesMu sync.Mutex
 // then serves the saved frames during logging without re-entering the external
 // cache. It returns nil when the source has no frames.
 func newExternalStackFramesProvider(source hasStackFrames) *stackFramesProvider {
-	externalStackFramesMu.Lock()
-	frames := source.StackFrames()
-	externalStackFramesMu.Unlock()
+	if goErr, ok := source.(*errors.Error); ok {
+		externalStackFramesMu.Lock()
+		frames := goErr.StackFrames()
+		externalStackFramesMu.Unlock()
+		return cachedFramesProvider(source, frames)
+	}
 
+	// Unknown implementations are called without the package lock. Holding the
+	// lock across an arbitrary callback can deadlock a wrapper whose
+	// StackFrames itself wraps another error in this package.
+	return cachedFramesProvider(source, source.StackFrames())
+}
+
+func cachedFramesProvider(source hasStackFrames, frames []errors.StackFrame) *stackFramesProvider {
 	if len(frames) == 0 {
 		return nil
 	}

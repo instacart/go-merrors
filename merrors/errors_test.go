@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sync"
 	"testing"
+	"time"
 
 	goerr "github.com/go-errors/errors"
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,16 @@ type stackFrameError struct {
 func (e stackFrameError) Error() string { return "stack frame error" }
 
 func (e stackFrameError) StackFrames() []goerr.StackFrame { return e.frames }
+
+type reentrantStackError struct {
+	cause error
+}
+
+func (e reentrantStackError) Error() string { return "reentrant stack error" }
+
+func (e reentrantStackError) StackFrames() []goerr.StackFrame {
+	return WrapMessage(e.cause, "inner").StackFrames()
+}
 
 type customIsSentinel struct{}
 
@@ -418,6 +429,23 @@ func TestErrors(t *testing.T) {
 		}
 		close(start)
 		wg.Wait()
+	})
+
+	t.Run("ReentrantExternalStackFramesDoesNotDeadlock", func(t *testing.T) {
+		// An external wrapper may implement StackFrames by wrapping its cause
+		// in this package. The outer wrap must not hold a lock across that
+		// callback, or the inner wrap deadlocks.
+		done := make(chan Error, 1)
+		go func() {
+			done <- WrapMessage(reentrantStackError{cause: goerr.New("inner cause")}, "outer")
+		}()
+
+		select {
+		case err := <-done:
+			assert.NotEmpty(t, err.StackFrames())
+		case <-time.After(2 * time.Second):
+			t.Fatal("wrapping a reentrant external stack source deadlocked")
+		}
 	})
 
 	t.Run("As", func(t *testing.T) {
