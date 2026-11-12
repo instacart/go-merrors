@@ -1,6 +1,6 @@
 module github.com/instacart/go-merrors
 
-go 1.25.6
+go 1.25.0
 
 require (
 	github.com/go-errors/errors v1.5.1
