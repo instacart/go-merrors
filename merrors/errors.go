@@ -60,11 +60,15 @@ func newExternalStackFramesProvider(source hasStackFrames) *stackFramesProvider 
 	return provider
 }
 
-// stackFramesProviderForWrapped reuses an existing provider for errors created
-// by this package and materializes external sources once under the lock.
+// stackFramesProviderForWrapped preserves the concrete error's StackFrames
+// behavior. Reusing the base errForStack directly would bypass overrides such
+// as panicError's runtime-frame trimming and inline-aware resolution.
 func stackFramesProviderForWrapped(source hasStackFrames) *stackFramesProvider {
-	if own, ok := source.(interface{ ownStackFrames() *stackFramesProvider }); ok {
-		return own.ownStackFrames()
+	if existing, ok := source.(Error); ok {
+		if withStack, ok := existing.(interface{ hasStack() bool }); ok && !withStack.hasStack() {
+			return nil
+		}
+		return newCapturedStackFramesProvider(source)
 	}
 	return newExternalStackFramesProvider(source)
 }

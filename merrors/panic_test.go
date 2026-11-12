@@ -69,6 +69,32 @@ func TestPanicErrors(t *testing.T) {
 			"the panic site must be the first frame reported")
 	})
 
+	t.Run("wrapping a recovered panic preserves panic-site frames", func(t *testing.T) {
+		var recovered error
+		func() {
+			defer RecoverAsError(&recovered)
+			panicOneCallDown()
+		}()
+
+		recoveredErr, ok := recovered.(Error)
+		require.True(t, ok)
+		for name, wrapped := range map[string]Error{
+			"WrapMessage": WrapMessage(recovered, "context"),
+			"Errorf":      Errorf("context: %w", recovered),
+		} {
+			t.Run(name, func(t *testing.T) {
+				frames := wrapped.StackFrames()
+				require.NotEmpty(t, frames)
+				assert.Equal(t, recoveredErr.StackFrames(), frames,
+					"wrapping must preserve the concrete error's StackFrames behavior")
+				first := frames[0]
+				assert.Equal(t, functionName(panicOneCallDown), fmt.Sprintf("%s.%s", first.Package, first.Name),
+					"the panic site must survive contextual wrapping")
+				assert.NotEqual(t, "runtime", first.Package)
+			})
+		}
+	})
+
 	t.Run("a panicked error stays reachable, without losing the stack", func(t *testing.T) {
 		sentinel := NewErrorBuilder().SetMessage("the cause").Build()
 
