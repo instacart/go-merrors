@@ -1,4 +1,4 @@
-# go-merrors (merrors)
+# Mashed Errors (merrors)
 
 Library for creating custom errors with stacktraces.
 
