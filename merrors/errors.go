@@ -27,12 +27,46 @@ type stackFramesProvider struct {
 	once   sync.Once
 }
 
-// newStackFramesProvider wraps source, returning nil when there is no stack.
-func newStackFramesProvider(source hasStackFrames) *stackFramesProvider {
+// externalStackFramesMu serializes the initial StackFrames lookup for sources
+// not created by this package. External implementations (notably go-errors)
+// may materialize their cache without synchronization, so two wrappers of the
+// same external sentinel must not call it concurrently.
+var externalStackFramesMu sync.Mutex
+
+// newCapturedStackFramesProvider lazily wraps a stack created by this package.
+// Nobody outside can share this source, so the provider Once is sufficient.
+func newCapturedStackFramesProvider(source hasStackFrames) *stackFramesProvider {
 	if source == nil {
 		return nil
 	}
 	return &stackFramesProvider{source: source}
+}
+
+// newExternalStackFramesProvider materializes an external source's frames
+// under the package lock so concurrent Wrap calls cannot race its lazy cache.
+// It returns nil when the source has no frames.
+func newExternalStackFramesProvider(source hasStackFrames) *stackFramesProvider {
+	externalStackFramesMu.Lock()
+	frames := source.StackFrames()
+	externalStackFramesMu.Unlock()
+
+	if len(frames) == 0 {
+		return nil
+	}
+	provider := &stackFramesProvider{source: source}
+	provider.once.Do(func() {
+		provider.frames = frames
+	})
+	return provider
+}
+
+// stackFramesProviderForWrapped reuses an existing provider for errors created
+// by this package and materializes external sources once under the lock.
+func stackFramesProviderForWrapped(source hasStackFrames) *stackFramesProvider {
+	if own, ok := source.(interface{ ownStackFrames() *stackFramesProvider }); ok {
+		return own.ownStackFrames()
+	}
+	return newExternalStackFramesProvider(source)
 }
 
 func (p *stackFramesProvider) StackFrames() []errors.StackFrame {
@@ -119,6 +153,12 @@ func (c *BaseError[T]) WithoutStack() Error {
 	baseClone.errForStack = nil
 	baseClone.originalErr = c.self
 	return clone
+}
+
+// ownStackFrames exposes the provider to Wrap so derived errors can share the
+// same lazy materialization instead of re-reading the source.
+func (e *BaseError[T]) ownStackFrames() *stackFramesProvider {
+	return e.errForStack
 }
 
 // Returns just the error message without augmenting it.
@@ -326,8 +366,8 @@ func (b *BaseErrorBuilder[B, T]) Wrap(wrappedErr error) B {
 	// Only adopt the wrapped error's stack if it actually has frames. An
 	// explicitly stack-less error (e.g. original.WithoutStack()) must not
 	// suppress the stack captured by Build.
-	if errWithStack, ok := wrappedErr.(hasStackFrames); ok && len(errWithStack.StackFrames()) > 0 {
-		b.errForStack = newStackFramesProvider(errWithStack)
+	if errWithStack, ok := wrappedErr.(hasStackFrames); ok {
+		b.errForStack = stackFramesProviderForWrapped(errWithStack)
 	}
 	if errWithStack, ok := wrappedErr.(Error); ok {
 		b.wrappedErr = &identityError{
@@ -394,7 +434,7 @@ func (b *BaseErrorBuilder[B, T]) PopulateBuilderResult(result T) {
 // This is meant to be called from within Build() methods in subtypes.
 func (b *BaseErrorBuilder[B, T]) CaptureStack(skip int) B {
 	if b.errForStack == nil {
-		b.errForStack = newStackFramesProvider(errors.Wrap("", skip+1))
+		b.errForStack = newCapturedStackFramesProvider(errors.Wrap("", skip+1))
 	}
 	return b.self
 }

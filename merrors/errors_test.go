@@ -399,6 +399,27 @@ func TestErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("ConcurrentWrapExternalGoErrors", func(t *testing.T) {
+		// The shared go-errors sentinel has an unsynchronized lazy frame cache.
+		// Concurrent WrapMessage calls must not race its first StackFrames call.
+		const goroutines = 64
+		cause := goerr.New("shared sentinel")
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				err := WrapMessage(cause, "context")
+				assert.NotEmpty(t, err.StackFrames())
+				assert.NotEmpty(t, FormatErrorStack(err))
+			}()
+		}
+		close(start)
+		wg.Wait()
+	})
+
 	t.Run("As", func(t *testing.T) {
 		original := New("thecause")
 		var target Error

@@ -1,6 +1,11 @@
 package merrors
 
-import "github.com/go-errors/errors"
+import (
+	"runtime"
+	"strings"
+
+	"github.com/go-errors/errors"
+)
 
 // panicError is a recovered panic, as an error with the stack it was recovered at.
 //
@@ -31,7 +36,7 @@ func newPanicErrorBuilder() *panicErrorBuilder {
 // frames early for the other, and both look plausible. What is left is the panicking function
 // first, which is where the runtime's own panic trace starts.
 func (e *panicError) StackFrames() []errors.StackFrame {
-	frames := e.BaseError.StackFrames()
+	frames := e.inlineAwareStackFrames()
 
 	first := 0
 	for first < len(frames) && frames[first].Package == "runtime" {
@@ -39,6 +44,53 @@ func (e *panicError) StackFrames() []errors.StackFrame {
 	}
 
 	return frames[first:]
+}
+
+// inlineAwareStackFrames resolves the raw captured PCs with
+// runtime.CallersFrames instead of go-errors' runtime.FuncForPC-based
+// resolution, so an inlined panic site is reported as the function that
+// panicked rather than its outer caller.
+func (e *panicError) inlineAwareStackFrames() []errors.StackFrame {
+	if provider := e.BaseError.errForStack; provider != nil {
+		if source, ok := provider.source.(*errors.Error); ok {
+			return stackFramesFromPCs(source.Callers())
+		}
+	}
+	return e.BaseError.StackFrames()
+}
+
+func stackFramesFromPCs(pcs []uintptr) []errors.StackFrame {
+	var frames []errors.StackFrame
+	iter := runtime.CallersFrames(pcs)
+	for {
+		frame, more := iter.Next()
+		pkg, name := splitFunctionName(frame.Function)
+		frames = append(frames, errors.StackFrame{
+			File:           frame.File,
+			LineNumber:     frame.Line,
+			Name:           name,
+			Package:        pkg,
+			ProgramCounter: frame.PC,
+		})
+		if !more {
+			break
+		}
+	}
+	return frames
+}
+
+func splitFunctionName(full string) (string, string) {
+	pkg := ""
+	name := full
+	if lastSlash := strings.LastIndex(name, "/"); lastSlash >= 0 {
+		pkg = name[:lastSlash+1]
+		name = name[lastSlash+1:]
+	}
+	if period := strings.Index(name, "."); period >= 0 {
+		pkg += name[:period]
+		name = name[period+1:]
+	}
+	return pkg, strings.ReplaceAll(name, "·", ".")
 }
 
 // RecoverAsError can be invoked in a deferred statement to automatically assign a recovered
