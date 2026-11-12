@@ -194,6 +194,12 @@ func firstStackFrames(err error) []errors.StackFrame {
 	return nil
 }
 
+// hasStack reports whether a stack provider is attached without materializing
+// its frames.
+func (e *BaseError[T]) hasStack() bool {
+	return e.errForStack != nil
+}
+
 func (e *BaseError[T]) StackFrames() []errors.StackFrame {
 	// We allow some errors to omit the stack if they are in a chain of errors
 	// and the stack would be repetitive.
@@ -458,8 +464,14 @@ func Wrap(err error) Error {
 	if err == nil {
 		return nil
 	}
-	if err, ok := err.(Error); ok {
-		return err
+	if existing, ok := err.(Error); ok {
+		if withStack, ok := existing.(interface{ hasStack() bool }); ok {
+			if withStack.hasStack() {
+				return existing
+			}
+		} else if len(existing.StackFrames()) > 0 {
+			return existing
+		}
 	}
 	return NewErrorBuilder().Wrap(err).CaptureStack(1).Build()
 }

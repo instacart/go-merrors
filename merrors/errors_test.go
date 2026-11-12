@@ -280,6 +280,20 @@ func TestErrors(t *testing.T) {
 		assert.True(t, stderrors.Is(Errorf("context: %w", cause), cause))
 	})
 
+	t.Run("WrapStacklessErrorCapturesStack", func(t *testing.T) {
+		original := NewErrorBuilder().SetMessage("cause").Build()
+		stackless := original.WithoutStack()
+
+		wrapped := Wrap(stackless)
+		assert.NotEmpty(t, wrapped.StackFrames())
+		assert.True(t, stderrors.Is(wrapped, stackless))
+	})
+
+	t.Run("WrapStackedErrorReturnsSame", func(t *testing.T) {
+		original := New("cause")
+		assert.Same(t, original, Wrap(original))
+	})
+
 	t.Run("WrapAfterWithoutStackPreservesIdentity", func(t *testing.T) {
 		original := NewErrorBuilder().SetMessage("original").Build()
 		stackless := original.WithoutStack()
