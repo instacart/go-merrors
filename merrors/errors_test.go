@@ -88,6 +88,14 @@ func TestErrors(t *testing.T) {
 		return stack
 	}
 
+	t.Run("StringFormattingPreservesWidthAndPrecision", func(t *testing.T) {
+		err := New("abcdef")
+		assert.Equal(t, "abc", fmt.Sprintf("%.3s", err))
+		assert.Equal(t, "    abcdef", fmt.Sprintf("%10s", err))
+		assert.Equal(t, "abcdef    ", fmt.Sprintf("%-10s", err))
+		assert.Equal(t, `"abcdef"`, fmt.Sprintf("%q", err))
+	})
+
 	t.Run("Default", func(t *testing.T) {
 		err := NewErrorBuilder().Build()
 		assert.Equal(t, "", err.Error())

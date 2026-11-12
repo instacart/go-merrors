@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -283,16 +284,33 @@ func (e *BaseError[T]) Format(s fmt.State, verb rune) {
 			io.WriteString(s, FormatErrorStack(e.self)) //nolint:errcheck
 			return
 		}
-		fallthrough
-	case 's':
-		io.WriteString(s, e.self.Error()) //nolint:errcheck
-	case 'q':
-		fmt.Fprintf(s, "%q", e.self.Error()) //nolint:errcheck
-	case 'x':
-		fmt.Fprintf(s, "%x", e.self.Error()) //nolint:errcheck
-	case 'X':
-		fmt.Fprintf(s, "%X", e.self.Error()) //nolint:errcheck
+		writeFormattedString(s, 's', e.self.Error())
+	case 's', 'q', 'x', 'X':
+		writeFormattedString(s, verb, e.self.Error())
 	}
+}
+
+// writeFormattedString keeps the width, precision, and flags of the original
+// fmt.State when formatting the error message. Implementing fmt.Formatter
+// bypasses fmt's normal string handling, so formatting %s directly would lose
+// options such as %.3s and %10s.
+func writeFormattedString(s fmt.State, verb rune, value string) {
+	var format strings.Builder
+	format.WriteByte('%')
+	for _, flag := range []byte{'#', '0', '+', '-', ' '} {
+		if s.Flag(int(flag)) {
+			format.WriteByte(flag)
+		}
+	}
+	if width, ok := s.Width(); ok {
+		format.WriteString(strconv.Itoa(width))
+	}
+	if precision, ok := s.Precision(); ok {
+		format.WriteByte('.')
+		format.WriteString(strconv.Itoa(precision))
+	}
+	format.WriteRune(verb)
+	fmt.Fprintf(s, format.String(), value) //nolint:errcheck
 }
 
 // FormatErrorStack returns the error message and
