@@ -89,9 +89,7 @@ func (c *BaseError[T]) WithoutStack() Error {
 	clone := c.Clone()
 	baseClone := any(clone).(EmbedsBaseError[T]).baseError()
 	baseClone.errForStack = nil
-	if baseClone.originalErr == nil {
-		baseClone.originalErr = c.self
-	}
+	baseClone.originalErr = c.self
 	return clone
 }
 
@@ -118,14 +116,21 @@ func (e *BaseError[T]) Unwrap() error {
 	return e.wrappedErr
 }
 
-// Is forwards matching to the original error when this error is a stack-less
-// clone produced by WithoutStack. Without it, replacing a wrapped error with
-// its clone would break errors.Is and errors.As identity.
+// Is preserves matching against the error this stack-less clone replaced.
+// It intentionally does not recursively search the original error's chain:
+// Unwrap already walks that chain, and searching it here as well makes repeated
+// WrapMessage calls exponential for an absent target.
 func (e *BaseError[T]) Is(target error) bool {
 	if e.originalErr == nil {
 		return false
 	}
-	return stderrors.Is(e.originalErr, target)
+	if target == e.originalErr {
+		return true
+	}
+	if iser, ok := e.originalErr.(interface{ Is(error) bool }); ok {
+		return iser.Is(target)
+	}
+	return false
 }
 
 func (e *BaseError[T]) Format(s fmt.State, verb rune) {
@@ -223,6 +228,9 @@ func (b *BaseErrorBuilder[B, T]) baseErrorBuilder() *BaseErrorBuilder[B, T] { //
 // This is useful for converting an error to a different type or
 // adding more context to the error.
 func (b *BaseErrorBuilder[B, T]) Wrap(wrappedErr error) B {
+	// This call replaces the wrapped error; drop any stack selected for the
+	// previous one before choosing the new replacement's stack.
+	b.errForStack = nil
 	if wrappedErr == nil {
 		b.wrappingNilErr = true
 		return b.self

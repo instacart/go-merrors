@@ -10,6 +10,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+type stackFrameError struct {
+	frames []goerr.StackFrame
+}
+
+func (e stackFrameError) Error() string { return "stack frame error" }
+
+func (e stackFrameError) StackFrames() []goerr.StackFrame { return e.frames }
+
 func TestErrors(t *testing.T) {
 	normalizeStack := func(stack string) string {
 		stack = regexp.MustCompile("\n\t.*/errors_test.go:").ReplaceAllString(stack, "\n\t/root/errors_test.go:")
@@ -227,6 +235,24 @@ func TestErrors(t *testing.T) {
 		cause := New("cause")
 		assert.True(t, stderrors.Is(WrapMessage(cause, "context"), cause))
 		assert.True(t, stderrors.Is(Errorf("context: %w", cause), cause))
+	})
+
+	t.Run("WrapAfterWithoutStackPreservesIdentity", func(t *testing.T) {
+		original := NewErrorBuilder().SetMessage("original").Build()
+		stackless := original.WithoutStack()
+		wrapped := WrapMessage(stackless, "context")
+
+		assert.True(t, stderrors.Is(wrapped, stackless))
+		assert.True(t, stderrors.Is(wrapped, original))
+	})
+
+	t.Run("WrapReplacesStack", func(t *testing.T) {
+		stacked := stackFrameError{frames: []goerr.StackFrame{{Package: "sentinel-package"}}}
+		err := NewErrorBuilder().Wrap(stacked).Wrap(stderrors.New("plain")).Build()
+
+		for _, frame := range err.StackFrames() {
+			assert.NotEqual(t, "sentinel-package", frame.Package)
+		}
 	})
 
 	t.Run("As", func(t *testing.T) {
