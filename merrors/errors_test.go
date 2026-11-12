@@ -31,6 +31,35 @@ func (e reentrantStackError) StackFrames() []goerr.StackFrame {
 	return WrapMessage(e.cause, "inner").StackFrames()
 }
 
+type emptyFramesError struct {
+	BaseError[*emptyFramesError]
+}
+
+func (e *emptyFramesError) StackFrames() []goerr.StackFrame { return nil }
+
+type emptyFramesErrorBuilder struct {
+	BaseErrorBuilder[*emptyFramesErrorBuilder, *emptyFramesError]
+}
+
+func newEmptyFramesErrorBuilder() *emptyFramesErrorBuilder {
+	return InitBaseErrorBuilder(&emptyFramesErrorBuilder{}, func() *emptyFramesError { return &emptyFramesError{} })
+}
+
+type uncomparableError struct {
+	*BaseError[*uncomparableError]
+	values []string
+}
+
+type uncomparableErrorBuilder struct {
+	BaseErrorBuilder[*uncomparableErrorBuilder, *uncomparableError]
+}
+
+func newUncomparableErrorBuilder() *uncomparableErrorBuilder {
+	return InitBaseErrorBuilder(&uncomparableErrorBuilder{}, func() *uncomparableError {
+		return &uncomparableError{BaseError: &BaseError[*uncomparableError]{}}
+	})
+}
+
 type customIsSentinel struct{}
 
 func (s *customIsSentinel) Error() string { return "custom sentinel" }
@@ -444,6 +473,29 @@ func TestErrors(t *testing.T) {
 
 		wrapped := WrapMessage(cause, "retry")
 		assert.NotEmpty(t, wrapped.StackFrames())
+	})
+
+	t.Run("EmptyConcreteStackFramesStillCaptureFallback", func(t *testing.T) {
+		empty := newEmptyFramesErrorBuilder().SetMessage("empty").CaptureStack(1).Build().(*emptyFramesError)
+		assert.True(t, empty.hasStack())
+		assert.Empty(t, empty.StackFrames())
+
+		wrapped := WrapMessage(empty, "context")
+		assert.NotEmpty(t, wrapped.StackFrames())
+
+		rewrapped := Wrap(empty)
+		assert.NotEmpty(t, rewrapped.StackFrames())
+	})
+
+	t.Run("UncomparableErrorTargetDoesNotPanic", func(t *testing.T) {
+		ptr := newUncomparableErrorBuilder().SetMessage("uncomparable").CaptureStack(1).Build().(*uncomparableError)
+		ptr.values = []string{"slice makes this value uncomparable"}
+		value := *ptr
+
+		wrapped := WrapMessage(value, "context")
+		assert.NotPanics(t, func() {
+			_ = stderrors.Is(wrapped, value)
+		})
 	})
 
 	t.Run("ReentrantExternalStackFramesDoesNotDeadlock", func(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -83,10 +84,10 @@ func cachedFramesProvider(source hasStackFrames, frames []errors.StackFrame) *st
 // as panicError's runtime-frame trimming and inline-aware resolution.
 func stackFramesProviderForWrapped(source hasStackFrames) *stackFramesProvider {
 	if existing, ok := source.(Error); ok {
-		if withStack, ok := existing.(interface{ hasStack() bool }); ok && !withStack.hasStack() {
-			return nil
-		}
-		return newCapturedStackFramesProvider(source)
+		// A custom error can override StackFrames and return no frames while
+		// inheriting hasStack() == true. Check the concrete result so an empty
+		// override does not suppress CaptureStack on the outer error.
+		return cachedFramesProvider(existing, existing.StackFrames())
 	}
 	return newExternalStackFramesProvider(source)
 }
@@ -216,6 +217,20 @@ type errorValue interface {
 	Error
 }
 
+// sameError compares two error values without panicking on an uncomparable
+// custom error type. Standard errors.Is only compares when the target's type is
+// comparable; this helper applies the same guard to both sides.
+func sameError(a, b error) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	typ := reflect.TypeOf(a)
+	if typ != reflect.TypeOf(b) || !typ.Comparable() {
+		return false
+	}
+	return a == b
+}
+
 // identityError preserves the identity of the error replaced by a stack-less
 // clone even when a custom error type shadows BaseError.Is with its own Is.
 // It is placed in the unwrap chain by Wrap.
@@ -225,7 +240,7 @@ type identityError struct {
 }
 
 func (e *identityError) Is(target error) bool {
-	if target == e.original {
+	if sameError(target, e.original) {
 		return true
 	}
 	if iser, ok := e.errorValue.(interface{ Is(error) bool }); ok {
@@ -252,7 +267,7 @@ func (e *BaseError[T]) Is(target error) bool {
 	if e.originalErr == nil {
 		return false
 	}
-	if target == e.originalErr {
+	if sameError(target, e.originalErr) {
 		return true
 	}
 	if iser, ok := e.originalErr.(interface{ Is(error) bool }); ok {
@@ -593,14 +608,8 @@ func Wrap(err error) Error {
 	if err == nil {
 		return nil
 	}
-	if existing, ok := err.(Error); ok {
-		if withStack, ok := existing.(interface{ hasStack() bool }); ok {
-			if withStack.hasStack() {
-				return existing
-			}
-		} else if len(existing.StackFrames()) > 0 {
-			return existing
-		}
+	if existing, ok := err.(Error); ok && len(existing.StackFrames()) > 0 {
+		return existing
 	}
 	return NewErrorBuilder().Wrap(err).CaptureStack(1).Build()
 }
