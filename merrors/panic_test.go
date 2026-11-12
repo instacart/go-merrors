@@ -14,14 +14,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The panic helpers below must not be inlined: a stack frame names the outermost
+// function for an inlined PC, so the panic site would be reported as its caller under
+// some build modes (the race detector's, for one) and the assertions below would have
+// nothing to match.
+
 // panicOneCallDown panics one frame below whoever called it, so a test can tell the frame
 // that panicked from the frame that recovered it.
+//
+//go:noinline
 func panicOneCallDown() {
 	panic("nested panic")
 }
 
 // nilDereference panics the way a nil pointer does, which is not the same stack as an
 // explicit panic: it unwinds through runtime.panicmem and runtime.sigpanic first.
+//
+//go:noinline
 func nilDereference() {
 	var p *int
 	_ = *p
@@ -29,6 +38,8 @@ func nilDereference() {
 
 // panicWith raises a panic with the value it is given, so a test can name the frame that
 // panicked rather than matching an anonymous closure.
+//
+//go:noinline
 func panicWith(value any) {
 	panic(value)
 }
