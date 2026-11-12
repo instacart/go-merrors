@@ -323,13 +323,6 @@ func (b *BaseErrorBuilder[B, T]) Wrap(wrappedErr error) B {
 	}
 	b.wrappingNilErr = false
 	b.wrappedErr = wrappedErr
-	// If the wrapped error is a go-errors error, we can just unwrap it as
-	// it is not a custom error type that people want to check against generally
-	// speaking and it helps reduce the number of wrapped errors when reporting
-	// to sentry.
-	if goErr, ok := wrappedErr.(*errors.Error); ok {
-		b.wrappedErr = errors.Unwrap(goErr)
-	}
 	// Only adopt the wrapped error's stack if it actually has frames. An
 	// explicitly stack-less error (e.g. original.WithoutStack()) must not
 	// suppress the stack captured by Build.

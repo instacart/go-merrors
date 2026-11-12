@@ -59,13 +59,13 @@ func TestErrors(t *testing.T) {
 		assert.Equal(t, "bla", err.Error())
 		// For go errors we just copy the stack frames from the wrapped error.
 		assert.Greater(t, len(err.StackFrames()), 0)
-		assert.Equal(t, fmt.Errorf("bla"), Unwrap(err))
+		assert.Same(t, source, Unwrap(err))
 
 		err = Wrap(source).(*errorImpl)
 		assert.Equal(t, "bla", err.Error())
 		// For go errors we just copy the stack frames from the wrapped error.
 		assert.Greater(t, len(err.StackFrames()), 0)
-		assert.Equal(t, fmt.Errorf("bla"), Unwrap(err))
+		assert.Same(t, source, Unwrap(err))
 
 		// Ensuring that an already wrapped error is not wrapped again.
 		assert.Equal(t, err, Wrap(err))
@@ -314,6 +314,16 @@ func TestErrors(t *testing.T) {
 	t.Run("WrapStackedErrorReturnsSame", func(t *testing.T) {
 		original := New("cause")
 		assert.Same(t, original, Wrap(original))
+	})
+
+	t.Run("ErrorfPreservesGoErrorsOperand", func(t *testing.T) {
+		cause := goerr.New("cause")
+		err := Errorf("context: %w", cause)
+
+		assert.True(t, stderrors.Is(err, cause))
+		var target *goerr.Error
+		assert.True(t, stderrors.As(err, &target))
+		assert.Same(t, cause, target)
 	})
 
 	t.Run("WrapPreservesIdentityWithCustomIs", func(t *testing.T) {
