@@ -2,12 +2,12 @@
 
 Library for creating custom errors with stacktraces.
 
-It is built on top of the http://github.com/go-errors/errors package.
+It is built on top of the https://github.com/go-errors/errors package.
 
 Goals:
 - Be able to create custom errors and extend functionality (like add new fields).
 - Be able to wrap other errors and add contextual information to them.
-- Support logging errors with stacktraces properly formatted to be consumed by DataDog.
+- Support structured logging with stacktraces (for example, Datadog).
 
 Pre-1.0, maintained on a best-effort basis. See [Project status](#project-status).
 
@@ -26,13 +26,11 @@ The code above prints:
 message
 main.main
 	main.go:22
-runtime/internal/atomic.(*Uint32).Load
-	GOROOT/src/runtime/internal/atomic/types.go:194
 runtime.goexit
 	src/runtime/asm_amd64.s:1695
 ```
 
-Note: The formatting `%+v` instructs the error to output its stacktrace in addition to its message. You should only use it for local debugging as for production you should instead follow the instructions in `Logging an error to datadog` section.
+Note: The formatting `%+v` instructs the error to output its stacktrace in addition to its message. You should only use it for local debugging as for production you should instead follow the instructions in `Logging an error` section.
 
 Runnable: `Example` in [`example/basic_test.go`](example/basic_test.go).
 
@@ -75,15 +73,13 @@ main.methodB
 	main.go:24
 main.main
 	main.go:39
-runtime/internal/atomic.(*Uint32).Load
-	GOROOT/src/runtime/internal/atomic/types.go:194
 runtime.goexit
 	src/runtime/asm_amd64.s:1695
 ```
 
 Runnable: `ExampleNewErrorBuilder` in [`example/basic_test.go`](example/basic_test.go).
 
-### Logging an error to datadog
+### Logging an error
 
 This package does not depend on a logger. Use `merrors.FormatErrorStack` to build the error
 message and stacktrace for a log line.
@@ -92,7 +88,7 @@ Runnable: `TestFormatErrorStack` in [`example/basic_test.go`](example/basic_test
 
 ### Creating a minimal custom error
 
-Below is an example of a customly defined error.
+Below is an example of a custom-defined error.
 
 ```go
 type CustomError struct {
@@ -113,7 +109,7 @@ Runnable: `ExampleInitBaseErrorBuilder` in [`example/custom_error_test.go`](exam
 
 ### Creating a custom error with extra properties and custom error messages.
 
-Below is an example of a customly defined error with extra properties.
+Below is an example of a custom-defined error with extra properties.
 
 It carries some extra properties (source) and has a custom implementation for the Error method that adds some extra message.
 
@@ -171,8 +167,6 @@ CustomError: message
 custom error message (source = source) :/CustomError
 main.main
 	main.go:38
-runtime/internal/atomic.(*Uint32).Load
-	GOROOT/src/runtime/internal/atomic/types.go:194
 runtime.goexit
 	src/runtime/asm_amd64.s:1695
 ```
@@ -202,19 +196,15 @@ main.work
 	main.go:22
 main.main
 	main.go:26
-internal/runtime/atomic.(*Uint32).Load
-	GOROOT/src/internal/runtime/atomic/types.go:194
 runtime.goexit
 	src/runtime/asm_amd64.s:1693
 ```
 
-The first frame is the function that panicked, not the one that recovered it: the frames that
-recovered are skipped, and the runtime machinery with them — by name rather than by count,
-because a nil dereference unwinds through two more runtime frames than an explicit `panic`
-does, so a fixed skip that lands right for one lands early for the other. Either way the
-report starts where the runtime's own panic trace starts.
+The first frame is the function that panicked, not the one that recovered it. Runtime frames
+are skipped by name rather than by count, because different panics unwind through different
+numbers of runtime frames.
 
-Two things to know before using it:
+Three things to know before using it:
 
 - **Defer it directly** — `defer merrors.RecoverAsError(&err)` — and not through a closure.
   `recover` only sees a panic when the function that deferred it calls `recover` itself, so
