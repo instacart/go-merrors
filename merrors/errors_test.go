@@ -76,6 +76,10 @@ func TestErrors(t *testing.T) {
 				"github.com/instacart/go-merrors/merrors.TestErrors.funcN\n"+
 				"\t/root/errors_test.go:",
 		)
+
+		assert.Equal(t, `"message"`, fmt.Sprintf("%q", err))
+		assert.Equal(t, "6d657373616765", fmt.Sprintf("%x", err))
+		assert.Equal(t, "6D657373616765", fmt.Sprintf("%X", err))
 	})
 
 	t.Run("FormatErrorStack", func(t *testing.T) {
@@ -208,6 +212,21 @@ func TestErrors(t *testing.T) {
 		err := Errorf("error with cause = %w", cause)
 		assert.Equal(t, "error with cause = thecause", err.Error())
 		assert.Equal(t, cause, Unwrap(err))
+	})
+
+	t.Run("ErrorfMultipleCauses", func(t *testing.T) {
+		first := stderrors.New("first")
+		second := stderrors.New("second")
+		err := Errorf("both: %w and %w", first, second)
+		assert.Equal(t, "both: first and second", err.Error())
+		assert.True(t, stderrors.Is(err, first))
+		assert.True(t, stderrors.Is(err, second))
+	})
+
+	t.Run("WrapPreservesErrorIdentity", func(t *testing.T) {
+		cause := New("cause")
+		assert.True(t, stderrors.Is(WrapMessage(cause, "context"), cause))
+		assert.True(t, stderrors.Is(Errorf("context: %w", cause), cause))
 	})
 
 	t.Run("As", func(t *testing.T) {

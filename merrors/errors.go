@@ -39,6 +39,10 @@ type BaseError[T any] struct {
 	errForStack hasStackFrames
 	createError func() T
 	wrappedErr  error
+
+	// originalErr is set on a stack-less clone created by WithoutStack. It
+	// lets errors.Is keep matching the error the clone replaced.
+	originalErr error
 }
 
 func (e *BaseError[T]) baseError() *BaseError[T] { //nolint:unused
@@ -62,6 +66,7 @@ func (e *BaseError[T]) PopulateClone(clone T) {
 	baseClone.message = e.message
 	baseClone.errForStack = e.errForStack
 	baseClone.wrappedErr = e.wrappedErr
+	baseClone.originalErr = e.originalErr
 	baseClone.self = embedsBaseClone
 }
 
@@ -84,6 +89,9 @@ func (c *BaseError[T]) WithoutStack() Error {
 	clone := c.Clone()
 	baseClone := any(clone).(EmbedsBaseError[T]).baseError()
 	baseClone.errForStack = nil
+	if baseClone.originalErr == nil {
+		baseClone.originalErr = c.self
+	}
 	return clone
 }
 
@@ -110,6 +118,16 @@ func (e *BaseError[T]) Unwrap() error {
 	return e.wrappedErr
 }
 
+// Is forwards matching to the original error when this error is a stack-less
+// clone produced by WithoutStack. Without it, replacing a wrapped error with
+// its clone would break errors.Is and errors.As identity.
+func (e *BaseError[T]) Is(target error) bool {
+	if e.originalErr == nil {
+		return false
+	}
+	return stderrors.Is(e.originalErr, target)
+}
+
 func (e *BaseError[T]) Format(s fmt.State, verb rune) {
 	switch verb {
 	case 'v':
@@ -120,6 +138,12 @@ func (e *BaseError[T]) Format(s fmt.State, verb rune) {
 		fallthrough
 	case 's':
 		io.WriteString(s, e.self.Error()) //nolint:errcheck
+	case 'q':
+		fmt.Fprintf(s, "%q", e.self.Error()) //nolint:errcheck
+	case 'x':
+		fmt.Fprintf(s, "%x", e.self.Error()) //nolint:errcheck
+	case 'X':
+		fmt.Fprintf(s, "%X", e.self.Error()) //nolint:errcheck
 	}
 }
 
@@ -378,10 +402,18 @@ func NewErrorBuilder() *ErrorBuilder {
 // Errorf is a shorthand to create an error with a formatted message.
 func Errorf(format string, a ...any) Error {
 	raw := fmt.Errorf(format, a...)
-	wrappedErr := errors.Unwrap(raw)
 	b := NewErrorBuilder()
-	if wrappedErr != nil {
-		b.Wrap(wrappedErr).OmitWrappedMessage()
+	// fmt.Errorf returns an error with Unwrap() []error when the format has
+	// multiple %w operands. errors.Unwrap only understands Unwrap() error, so
+	// retain every cause explicitly or errors.Is/errors.As cannot reach them.
+	if multi, ok := raw.(interface{ Unwrap() []error }); ok {
+		if joined := stderrors.Join(multi.Unwrap()...); joined != nil {
+			b.Wrap(joined).OmitWrappedMessage()
+		}
+	} else if single, ok := raw.(interface{ Unwrap() error }); ok {
+		if cause := single.Unwrap(); cause != nil {
+			b.Wrap(cause).OmitWrappedMessage()
+		}
 	}
 	return b.SetMessage(raw.Error()).CaptureStack(1).Build()
 }
