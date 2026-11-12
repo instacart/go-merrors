@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/go-errors/errors"
 )
@@ -12,6 +13,33 @@ import (
 type hasStackFrames interface {
 	error
 	StackFrames() []errors.StackFrame
+}
+
+// stackFramesProvider materializes the frames of a stack source exactly once.
+//
+// go-errors fills its frame cache lazily and without synchronization, so calling
+// StackFrames on the same source from several goroutines races. Errors built by
+// this package share one provider per stack: an error and every clone derived
+// from it hold the same pointer, and the Once serializes the first lookup.
+type stackFramesProvider struct {
+	source hasStackFrames
+	frames []errors.StackFrame
+	once   sync.Once
+}
+
+// newStackFramesProvider wraps source, returning nil when there is no stack.
+func newStackFramesProvider(source hasStackFrames) *stackFramesProvider {
+	if source == nil {
+		return nil
+	}
+	return &stackFramesProvider{source: source}
+}
+
+func (p *stackFramesProvider) StackFrames() []errors.StackFrame {
+	p.once.Do(func() {
+		p.frames = p.source.StackFrames()
+	})
+	return p.frames
 }
 
 type hasMessage interface {
@@ -36,7 +64,7 @@ func ConcatMessage(prefix string, suffix string, separator string) string {
 type BaseError[T any] struct {
 	self        EmbedsBaseError[T]
 	message     string
-	errForStack hasStackFrames
+	errForStack *stackFramesProvider
 	createError func() T
 	wrappedErr  error
 
@@ -200,6 +228,11 @@ func (e *BaseError[T]) hasStack() bool {
 	return e.errForStack != nil
 }
 
+// StackFrames returns the stack frames of the error.
+//
+// Frames are materialized lazily on first use. Clones share the provider
+// created at capture, so the first lookup is serialized even when it races
+// across copies of the error.
 func (e *BaseError[T]) StackFrames() []errors.StackFrame {
 	// We allow some errors to omit the stack if they are in a chain of errors
 	// and the stack would be repetitive.
@@ -216,7 +249,7 @@ type BaseErrorBuilder[B any, T EmbedsBaseError[T]] struct {
 	createError        func() T
 	message            string
 	wrappedMessage     string
-	errForStack        hasStackFrames
+	errForStack        *stackFramesProvider
 	wrappingNilErr     bool
 	wrappedErr         error
 	omitWrappedMessage bool
@@ -273,7 +306,7 @@ func (b *BaseErrorBuilder[B, T]) Wrap(wrappedErr error) B {
 	// explicitly stack-less error (e.g. original.WithoutStack()) must not
 	// suppress the stack captured by Build.
 	if errWithStack, ok := wrappedErr.(hasStackFrames); ok && len(errWithStack.StackFrames()) > 0 {
-		b.errForStack = errWithStack
+		b.errForStack = newStackFramesProvider(errWithStack)
 	}
 	if errWithStack, ok := wrappedErr.(Error); ok {
 		b.wrappedErr = errWithStack.WithoutStack()
@@ -337,7 +370,7 @@ func (b *BaseErrorBuilder[B, T]) PopulateBuilderResult(result T) {
 // This is meant to be called from within Build() methods in subtypes.
 func (b *BaseErrorBuilder[B, T]) CaptureStack(skip int) B {
 	if b.errForStack == nil {
-		b.errForStack = errors.Wrap("", skip+1)
+		b.errForStack = newStackFramesProvider(errors.Wrap("", skip+1))
 	}
 	return b.self
 }

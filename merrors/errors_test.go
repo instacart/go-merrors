@@ -4,6 +4,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"regexp"
+	"sync"
 	"testing"
 
 	goerr "github.com/go-errors/errors"
@@ -309,6 +310,42 @@ func TestErrors(t *testing.T) {
 
 		for _, frame := range err.StackFrames() {
 			assert.NotEqual(t, "sentinel-package", frame.Package)
+		}
+	})
+
+	t.Run("ConcurrentStackFrames", func(t *testing.T) {
+		// Frames are materialized lazily, so every goroutine below races to be
+		// the first to ask for them. Clones share the stack provider, so the
+		// lookup happens once, under the provider's Once.
+		const goroutines = 64
+
+		original := NewErrorBuilder().SetMessage("concurrent").Build()
+		errs := make([]Error, goroutines)
+		for i := range errs {
+			if i == 0 {
+				errs[i] = original
+				continue
+			}
+			errs[i] = original.WithAppendMessage("clone")
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for _, err := range errs {
+			go func(err Error) {
+				defer wg.Done()
+				<-start
+				assert.NotEmpty(t, err.StackFrames())
+				assert.NotEmpty(t, FormatErrorStack(err))
+				assert.NotEmpty(t, fmt.Sprintf("%+v", err))
+			}(err)
+		}
+		close(start)
+		wg.Wait()
+
+		for _, err := range errs {
+			assert.Equal(t, errs[0].StackFrames(), err.StackFrames())
 		}
 	})
 
