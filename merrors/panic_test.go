@@ -124,6 +124,24 @@ func TestPanicErrors(t *testing.T) {
 		assert.NotEmpty(t, cause.StackFrames(), "the cause keeps its own stack")
 	})
 
+	t.Run("panic frames preserve the original return address", func(t *testing.T) {
+		var err error
+		func() {
+			defer RecoverAsError(&err)
+			panicOneCallDown()
+		}()
+
+		pe := new(panicError)
+		require.ErrorAs(t, err, &pe)
+		frames := pe.StackFrames()
+		require.NotEmpty(t, frames)
+
+		frame := frames[0]
+		resolved, _ := runtime.CallersFrames([]uintptr{frame.ProgramCounter}).Next()
+		assert.Equal(t, frame.File, resolved.File)
+		assert.Equal(t, frame.LineNumber, resolved.Line)
+	})
+
 	t.Run("a nil dereference reports the function it happened in", func(t *testing.T) {
 		var err error
 
