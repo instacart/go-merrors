@@ -1,80 +1,55 @@
 package merrors
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 
-	"github.com/go-errors/errors"
+	goerrors "github.com/go-errors/errors"
 )
 
-// panicError is a recovered panic, as an error with the stack it was recovered at.
-//
-// It follows the convention BaseError documents for custom error types: the struct embeds
-// the base error, the builder embeds the base builder, and the constructor goes through
-// InitBaseErrorBuilder. Embedding is what supplies the stack, and the trim in StackFrames
-// below is the only thing this type adds to it — so a panicError formats through %+v and
-// FormatForLogger like any other error in this package, with nothing added to either.
 type panicError struct {
-	BaseError[*panicError]
+	BaseError
+	value any
 }
 
-// panicErrorBuilder builds a panicError.
-type panicErrorBuilder struct {
-	BaseErrorBuilder[*panicErrorBuilder, *panicError]
-}
+// PanicValue returns the value passed to panic.
+func (e *panicError) PanicValue() any { return e.value }
 
-// newPanicErrorBuilder returns a builder for a panicError.
-func newPanicErrorBuilder() *panicErrorBuilder {
-	return InitBaseErrorBuilder(&panicErrorBuilder{}, func() *panicError { return &panicError{} })
-}
-
-// StackFrames implements hasStackFrames, with the runtime machinery trimmed off the front.
-//
-// It has to be trimmed by name rather than skipped by count: an explicit panic unwinds
-// straight through runtime.gopanic, while a nil dereference goes through runtime.panicmem and
-// runtime.sigpanic first. A skip that lands on the function that panicked for one lands two
-// frames early for the other, and both look plausible. What is left is the panicking function
-// first, which is where the runtime's own panic trace starts.
-func (e *panicError) StackFrames() []errors.StackFrame {
-	frames := e.inlineAwareStackFrames()
-
-	first := 0
-	for first < len(frames) && frames[first].Package == "runtime" {
-		first++
-	}
-
-	return frames[first:]
-}
-
-// inlineAwareStackFrames resolves the raw captured PCs with
-// runtime.CallersFrames instead of go-errors' runtime.FuncForPC-based
-// resolution, so an inlined panic site is reported as the function that
-// panicked rather than its outer caller.
-func (e *panicError) inlineAwareStackFrames() []errors.StackFrame {
-	if provider := e.errForStack; provider != nil {
-		if source, ok := provider.source.(*errors.Error); ok {
-			return stackFramesFromPCs(source.Callers())
+func capturePanicFrames() []goerrors.StackFrame {
+	pcs := make([]uintptr, 64)
+	for {
+		n := runtime.Callers(2, pcs)
+		if n < len(pcs) {
+			pcs = pcs[:n]
+			break
 		}
+		pcs = make([]uintptr, len(pcs)*2)
 	}
-	return e.BaseError.StackFrames()
-}
-
-func stackFramesFromPCs(pcs []uintptr) []errors.StackFrame {
-	var frames []errors.StackFrame
 	iter := runtime.CallersFrames(pcs)
+	var frames []goerrors.StackFrame
+	seenRuntime := false
 	for {
 		frame, more := iter.Next()
 		pkg, name := splitFunctionName(frame.Function)
-		frames = append(frames, errors.StackFrame{
-			File:       frame.File,
-			LineNumber: frame.Line,
-			Name:       name,
-			Package:    pkg,
-			// CallersFrames has already adjusted PC to locate the calling
-			// instruction. Store the original return address so a consumer
-			// resolving these frames again (for example an error-reporting
-			// SDK) does not decrement it a second time and lose inline-frame
-			// deduplication.
+		if pkg == "runtime" {
+			seenRuntime = true
+			if !more {
+				break
+			}
+			continue
+		}
+		if !seenRuntime && name == "RecoverAsError" {
+			if !more {
+				break
+			}
+			continue
+		}
+		frames = append(frames, goerrors.StackFrame{
+			File:           frame.File,
+			LineNumber:     frame.Line,
+			Name:           name,
+			Package:        pkg,
 			ProgramCounter: frame.PC + 1,
 		})
 		if !more {
@@ -87,9 +62,9 @@ func stackFramesFromPCs(pcs []uintptr) []errors.StackFrame {
 func splitFunctionName(full string) (string, string) {
 	pkg := ""
 	name := full
-	if lastSlash := strings.LastIndex(name, "/"); lastSlash >= 0 {
-		pkg = name[:lastSlash+1]
-		name = name[lastSlash+1:]
+	if slash := strings.LastIndex(name, "/"); slash >= 0 {
+		pkg = name[:slash+1]
+		name = name[slash+1:]
 	}
 	if period := strings.Index(name, "."); period >= 0 {
 		pkg += name[:period]
@@ -98,62 +73,23 @@ func splitFunctionName(full string) (string, string) {
 	return pkg, strings.ReplaceAll(name, "·", ".")
 }
 
-// RecoverAsError can be invoked in a deferred statement to automatically assign a recovered
-// panic, if any, to the given non-nil error pointer. If there's no panic to recover, the
-// given error pointer will preserve its previous value, as opposed to forcing it to become
-// nil.
+// RecoverAsError converts a recovered panic into an error. Use it directly:
 //
-// It has to be deferred directly:
-//
-//	defer errors.RecoverAsError(&err)   // recovers
-//
-// and not through a closure:
-//
-//	defer func() { errors.RecoverAsError(&err) }()   // does not
-//
-// because recover only sees a panic when the function that deferred it calls recover
-// itself. The second form lets the panic through and the process dies.
-//
-// The recovered value is carried in the message, and unwrapped to when it is itself an
-// error, so errors.Is and errors.As reach it. It is not attached with Wrap: that takes the
-// stack from the wrapped error whenever that error carries frames of its own — see
-// BaseErrorBuilder.Wrap and CaptureStack — which for a panicked error means reporting where
-// it was created instead of where it was raised.
-//
-// So the stack reported here is the panic site, and a cause that has one of its own keeps it:
-// unwrapping reaches it, and it is what FormatErrorStack would print if this error had none.
-// Only one of the two can be in the report — FormatErrorStack stops at the first non-empty
-// frames in the chain — and the panic site is the one that cannot be recovered afterwards,
-// because it is only capturable from here.
-func RecoverAsError(err *error) {
-	rec := recover()
-	if rec == nil {
-		return
+//	defer merrors.RecoverAsError(&err)
+func RecoverAsError(errp *error) {
+	if recovered := recover(); recovered != nil {
+		var cause error
+		if err, ok := recovered.(error); ok {
+			cause = err
+		}
+		message := fmt.Sprintf("panic (recovered): %v", recovered)
+		pe := &panicError{
+			BaseError: NewBaseError(WithMessage(message), WithStackFrames(capturePanicFrames())),
+			value:     recovered,
+		}
+		if cause != nil {
+			pe.cause = cause
+		}
+		*errp = pe
 	}
-
-	builder := newPanicErrorBuilder().SetMessagef("panic (recovered): %v", rec)
-
-	// A recovered value that is itself an error stays reachable with errors.Is and errors.As,
-	// by unwrapping to it. This is set directly rather than through Wrap because Wrap takes
-	// the stack from the wrapped error whenever it carries frames of its own — which for a
-	// panicked error means reporting where it was created rather than where it was raised.
-	// Setting it here leaves errForStack alone, so the stack is still the one below.
-	if recoveredErr, ok := rec.(error); ok {
-		builder.wrappedErr = recoveredErr
-	}
-
-	// Built here, in the deferred function, because the stack is captured as the error is
-	// built: this is the last moment the frames that panicked are still live.
-	//
-	// CaptureStack is called with the recovery frames skipped, so the report starts at the
-	// panic machinery and the function that panicked rather than at this one. Build calls
-	// CaptureStack(1) itself, which then finds the stack already taken and leaves it alone.
-	*err = builder.CaptureStack(recoverySkip).Build()
 }
-
-// recoverySkip is how many frames of this package sit between the panic and the frames worth
-// reporting. CaptureStack adds one for itself and one for errors.Wrap, so this counts
-// RecoverAsError and the builder call around it — plus one more, which drops the panic
-// machinery. Where exactly that lands depends on the panic, and StackFrames trims the rest by
-// name; either way the first frame reported is the function that panicked.
-const recoverySkip = 2
