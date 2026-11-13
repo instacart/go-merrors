@@ -1,6 +1,5 @@
-// Every file in this directory is a test. The package has no non-test Go
-// files, so nothing here is importable, nothing here is part of merrors' API,
-// and `go test ./...` compiles and runs all of it.
+// Every file in this directory is a test, so this package is examples-only and
+// cannot be imported.
 package example
 
 import (
@@ -12,25 +11,18 @@ import (
 	"github.com/instacart/go-merrors/merrors"
 )
 
-// Example creates the smallest error this package can build.
-//
-// `%+v` prints the stacktrace as well, which is what you want while debugging
-// and not in production: the output is not stable, so it is not asserted here.
-// See [merrors.FormatErrorStack] and the example below for a log line instead.
+// Example creates the smallest error.
 func Example() {
-	err := merrors.NewErrorBuilder().SetMessage("message").Build()
+	err := merrors.New("message")
 
 	fmt.Println(err.Error())
 	// Output: message
 }
 
-// ExampleNewErrorBuilder wraps an error, adding the context of where it came
-// from. SetMessage on a wrapping builder appends, so the chain reads
-// innermost-first.
-func ExampleNewErrorBuilder() {
-	inner := merrors.NewErrorBuilder().SetMessage("innerError").Build()
-
-	err := merrors.NewErrorBuilder().Wrap(inner).SetMessage("error calling methodA").Build()
+// ExampleWrap adds context. The wrapped cause stays first.
+func ExampleWrap() {
+	inner := merrors.New("innerError")
+	err := merrors.Wrap(inner, merrors.WithMessage("error calling methodA"))
 
 	fmt.Println(err.Error())
 	// Output:
@@ -38,12 +30,9 @@ func ExampleNewErrorBuilder() {
 	// error calling methodA
 }
 
-// TestFormatErrorStack is the "log it to Datadog" recipe: one call produces the
-// message and the stacktrace that follows it, so the logger needs no knowledge
-// of this package's types.
+// TestFormatErrorStack shows the log-line recipe.
 func TestFormatErrorStack(t *testing.T) {
-	err := merrors.NewErrorBuilder().SetMessage("message").Build()
-
+	err := merrors.New("message")
 	formatted := merrors.FormatErrorStack(err)
 
 	require.Contains(t, formatted, "message")

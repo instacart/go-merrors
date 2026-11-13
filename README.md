@@ -1,251 +1,288 @@
 # Mashed Errors (merrors)
 
-Library for creating custom errors with stacktraces.
+Library for creating custom errors with stack traces.
 
-It is built on top of the https://github.com/go-errors/errors package.
+It is built on top of the [`github.com/go-errors/errors`](https://github.com/go-errors/errors)
+package.
 
 Goals:
-- Be able to create custom errors and extend functionality (like add new fields).
+
+- Be able to create custom errors and extend functionality (for example, add new fields).
 - Be able to wrap other errors and add contextual information to them.
-- Support structured logging with stacktraces (for example, Datadog).
+- Support structured logging with stack traces.
 
 Pre-1.0, maintained on a best-effort basis. See [Project status](#project-status).
 
 ## Usage
 
-### Creating an error with stack trace.
+### Creating an error with a stack trace
 
-Code below creates an error and prints it for debugging.
 ```go
-err := merrors.NewErrorBuilder().SetMessage("message").Build()
+err := merrors.New("could not read manifest")
 fmt.Printf("%+v\n", err)
 ```
 
-The code above prints:
-```
-message
-main.main
-	main.go:22
-runtime.goexit
-	src/runtime/asm_amd64.s:1695
-```
+`%+v` prints the message followed by the captured stack. Use it for local debugging; for
+production logs, use `FormatErrorStack` as described below.
 
-Note: The formatting `%+v` instructs the error to output its stacktrace in addition to its message. You should only use it for local debugging as for production you should instead follow the instructions in `Logging an error` section.
-
-Runnable: `Example` in [`example/basic_test.go`](example/basic_test.go).
-
-### Create a new error from an existing one adding more details
+### Adding context by wrapping
 
 ```go
-import (
-	"fmt"
+inner := merrors.New("innerError")
+err := merrors.Wrap(inner, merrors.WithMessage("error calling methodA"))
 
-	"github.com/instacart/go-merrors/merrors"
-)
-
-func methodA() error {
-	return merrors.NewErrorBuilder().SetMessage("innerError").Build()
-}
-
-func methodB() error {
-	err := methodA()
-	if err != nil {
-		// When wrapping another error, SetMessage adds the message in the end.
-		return merrors.NewErrorBuilder().Wrap(err).SetMessage("error calling methodA").Build()
-	}
-	return nil
-}
-
-func main() {
-    // ...
-	fmt.Printf("%+v\n", methodB())
-    // ...
-}
+fmt.Println(err.Error())
+// innerError
+// error calling methodA
 ```
 
-You will get:
-```
-innerError
-error calling methodA
-main.methodA
-	main.go:20
-main.methodB
-	main.go:24
-main.main
-	main.go:39
-runtime.goexit
-	src/runtime/asm_amd64.s:1695
-```
-
-Runnable: `ExampleNewErrorBuilder` in [`example/basic_test.go`](example/basic_test.go).
+Use `WithMessagef` with `Wrap` for a formatted message. `Errorf` preserves a wrapped cause when
+the format contains `%w`.
 
 ### Logging an error
 
-This package does not depend on a logger. Use `merrors.FormatErrorStack` to build the error
-message and stacktrace for a log line.
+This package does not depend on a logger. Use `FormatErrorStack` to build the message and stack
+trace for a log line. With zap, emit them as structured fields:
 
-Runnable: `TestFormatErrorStack` in [`example/basic_test.go`](example/basic_test.go).
+```go
+import (
+    "go.uber.org/zap"
+    "go.uber.org/zap/zapcore"
 
-### Creating a minimal custom error
+    "github.com/instacart/go-merrors/merrors"
+)
 
-Below is an example of a custom-defined error.
+func zapError(err error) zap.Field {
+    return zap.Object("error", zapcore.ObjectMarshalerFunc(func(enc zapcore.ObjectEncoder) error {
+        enc.AddString("message", err.Error())
+        enc.AddString("stack", merrors.FormatErrorStack(err))
+        return nil
+    }))
+}
+
+logger := zap.NewExample()
+defer logger.Sync()
+logger.Error("request failed", zapError(err))
+```
+
+`zap.NewExample()` is a ready-to-run development logger; production code normally injects the
+application's configured `*zap.Logger`.
+
+For console or plain-text logging, use `zap.String("error", merrors.FormatErrorStack(err))`.
+
+### Creating a sentinel error
+
+`NewSentinel` creates a stackless error for identity checks:
+
+```go
+var ErrNotFound = merrors.NewSentinel("not_found")
+
+if errors.Is(err, ErrNotFound) {
+    // handle the sentinel case
+}
+```
+
+## Custom error types
+
+Embed `BaseError` by value and build the message in a constructor:
 
 ```go
 type CustomError struct {
-	merrors.BaseError[*CustomError]
+    merrors.BaseError
+    Source string
 }
 
-type CustomErrorBuilder struct {
-	merrors.BaseErrorBuilder[*CustomErrorBuilder, *CustomError]
+func NewCustomError(source, message string, cause error) *CustomError {
+    return &CustomError{
+        BaseError: merrors.NewBaseError(
+            merrors.Wrapping(cause),
+            merrors.WithMessagef("%s (source = %s)", message, source),
+        ),
+        Source: source,
+    }
 }
 
-func NewCustomErrorBuilder() *CustomErrorBuilder {
-	return merrors.InitBaseErrorBuilder(&CustomErrorBuilder{}, func() *CustomError { return &CustomError{} })
-}
+err := NewCustomError("billing", "charge failed", cause)
 ```
 
+Call `NewBaseError` only from a constructor. It captures the stack at the constructor's caller; use
+`SkipFrames(n)` for deeper helpers.
 
-Runnable: `ExampleInitBaseErrorBuilder` in [`example/custom_error_test.go`](example/custom_error_test.go) — it also pins what wrapping `nil` returns.
-
-### Creating a custom error with extra properties and custom error messages.
-
-Below is an example of a custom-defined error with extra properties.
-
-It carries some extra properties (source) and has a custom implementation for the Error method that adds some extra message.
+If you also want callers to be able to override options while keeping custom formatting, add a
+message combiner after the caller options:
 
 ```go
+import "fmt"
+
 type CustomError struct {
-	merrors.BaseError[*CustomError]
-
-	source string
+    merrors.BaseError
+    Source string
 }
 
-func (c *CustomError) Error() string {
-	return "CustomError: " + c.BaseError.Error() + " :/CustomError"
-}
-
-func (c *CustomError) Source() string {
-	return c.source
-}
-
-func (c *CustomError) PopulateClone(clone *CustomError) {
-	c.BaseError.PopulateClone(clone)
-	clone.source = c.source
-}
-
-func (b *CustomErrorBuilder) PopulateBuilderResult(result *CustomError) {
-	b.SetMessage(b.GetMessage() + " (source = " + b.source + ")")
-	result.source = b.source
-	b.BaseErrorBuilder.PopulateBuilderResult(result)
-}
-
-type CustomErrorBuilder struct {
-	merrors.BaseErrorBuilder[*CustomErrorBuilder, *CustomError]
-
-	source string
-}
-
-func (b *CustomErrorBuilder) SetSource(source string) *CustomErrorBuilder {
-	b.source = source
-	return b
-}
-
-func NewCustomErrorBuilder() *CustomErrorBuilder {
-	return merrors.InitBaseErrorBuilder(&CustomErrorBuilder{}, func() *CustomError { return &CustomError{} })
+func NewCustomError(source, message string, opts ...merrors.Option) *CustomError {
+    opts = append([]merrors.Option{merrors.WithMessage(message)}, opts...)
+    opts = append(opts, merrors.WithMessageCombiner(func(wrapped, current string) string {
+        return merrors.DefaultMessageCombiner(
+            wrapped,
+            fmt.Sprintf("CustomError: %s (source = %s)", current, source),
+        )
+    }))
+    return &CustomError{
+        BaseError: merrors.NewBaseError(opts...),
+        Source:    source,
+    }
 }
 ```
 
-Example usage:
+Appending the combiner last makes the custom formatting invariant; caller message options still
+apply before it.
+
+### Using custom types safely
+
+- Embed `BaseError` by value.
+- Do not implement `Error()`, `Format`, or `StackFrames` on the custom type. `BaseError` owns them,
+  so `err.Error()`, `%v`, `%+v`, and `FormatErrorStack` agree.
+- Render custom fields into the message at construction. Keep them as struct fields too when
+  callers need them via `errors.As`.
+- Call `CheckErrorType` from tests of custom error types to catch an accidental method override:
+
+  ```go
+  if err := merrors.CheckErrorType(customErr); err != nil {
+      t.Fatal(err)
+  }
+  ```
+
+- If a constructor needs explicit stack frames, pass them to `NewBaseError` with
+  `WithStackFrames(frames)` instead of overriding `StackFrames`.
+
+For an advanced message clone, copy the custom type and delegate the base error to
+`CloneBaseErrorWithAppendMessage`:
+
 ```go
-customErr := NewCustomErrorBuilder().Wrap(err).SetSource("source").SetMessage("custom error message").Build()
-fmt.Printf("%+v\n", customErr)
+func (e *CustomError) WithAppendMessage(msg string) *CustomError {
+    clone := *e
+    clone.BaseError = merrors.CloneBaseErrorWithAppendMessage(e.BaseError, msg)
+    return &clone
+}
 ```
 
-Running the above gets you:
+`clone := *e` preserves the custom fields, so nothing is lost.
+
+## Options
+
+| Option | Effect |
+| --- | --- |
+| `WithMessage(message)` | Sets this error's message. Last message option wins. |
+| `WithMessagef(format, args...)` | Formatted message; last message option wins. |
+| `WithMessageCombiner(combiner)` | Combines wrapped and current messages; last combiner wins. |
+| `Wrapping(err)` | Sets the cause and reuses its stack when available. |
+| `OmitWrappedMessage()` | Keeps only this error's message. |
+| `SkipFrames(n)` | Skips extra frames when capturing a new stack. |
+| `WithoutStack()` | Disables capturing a new stack. |
+| `WithStackFrames(frames)` | Supplies an explicit stack, for advanced custom overrides. |
+
+`DefaultMessageCombiner` puts the wrapped message first and the current message on a new line,
+omitting empty messages. Pass `WithMessageCombiner` to customize that behavior.
+
+`NewBaseError` captures the stack at the caller of the constructor that calls it. If no message is
+supplied, this layer's message is empty and does not add a blank line.
+
+## Formatting
+
+`FormatErrorStack` returns the complete message followed by the first stack found in the chain.
+`%+v` uses the same stack formatting.
+
+```go
+fmt.Printf("%+v\n", err)
+logger.WithField("error", merrors.FormatErrorStack(err)).Error("request failed")
 ```
-CustomError: message
-custom error message (source = source) :/CustomError
-main.main
-	main.go:38
-runtime.goexit
-	src/runtime/asm_amd64.s:1695
-```
 
-Runnable: `ExampleInitBaseErrorBuilder_withProperties` in [`example/custom_error_test.go`](example/custom_error_test.go).
+`Format` preserves normal string formatting flags, width, and precision for `%s`, `%q`, `%x`, and
+`%X`.
 
-### Recovering a panic
+## Wrapping and stacks
 
-`RecoverAsError` turns a recovered panic into an error from this package, so it is logged
-with a stacktrace like everything else.
+The wrapped cause remains in the chain so `errors.Is` and `errors.As` behave normally. When the
+cause already has a stack, the wrapper reuses it instead of capturing a replacement stack. A
+reporting tool that walks `Unwrap` may therefore see the same origin stack at more than one layer;
+this is intentional for now and avoids reporting the wrapper location as a new failure site.
+
+## Panic recovery
+
+Use `RecoverAsError` directly in a deferred call:
 
 ```go
 func work() (err error) {
-	defer merrors.RecoverAsError(&err)
-	panic("boom")
-	return nil
+    defer merrors.RecoverAsError(&err)
+    panic("boom")
 }
 
-err := work()
-fmt.Printf("%+v\n", err)
+fmt.Println(work().Error())
+// panic (recovered): boom
 ```
 
-The code above prints:
+Recovery captures the panic site's stack. If the panic value is an error, it remains reachable with
+`errors.Is`/`errors.As` while the recovered error gets its own recovery stack.
+
+## API
+
+```go
+type Error interface {
+    error
+    StackFrames() []errors.StackFrame
+    // contains unexported sealing method
+}
+
+type MessageCombiner func(wrappedMessage, currentMessage string) string
+
+func DefaultMessageCombiner(wrappedMessage, currentMessage string) string
+func WithMessageCombiner(combiner MessageCombiner) Option
+func New(message string) error
+func Errorf(format string, a ...any) error
+func Wrap(err error, opts ...Option) error
+func NewSentinel(message string) error
+func RecoverAsError(errp *error)
+func CheckErrorType(err Error) error
+func FormatErrorStack(err error) string
+func As(err error, target any) bool
+func Is(err, target error) bool
+func Unwrap(err error) error
 ```
-panic (recovered): boom
-main.work
-	main.go:22
-main.main
-	main.go:26
-runtime.goexit
-	src/runtime/asm_amd64.s:1693
+
+The convenience constructors return plain `error`, so they compose like any other Go error. If
+you need the captured stack directly, cast the result to `merrors.Error`:
+
+```go
+err := merrors.New("message")
+if stacked, ok := err.(merrors.Error); ok {
+    frames := stacked.StackFrames()
+}
 ```
 
-The first frame is the function that panicked, not the one that recovered it. Runtime frames
-are skipped by name rather than by count, because different panics unwind through different
-numbers of runtime frames.
+`FormatErrorStack(err)` is the simpler option when you only need the formatted stack.
 
-Three things to know before using it:
-
-- **Defer it directly** — `defer merrors.RecoverAsError(&err)` — and not through a closure.
-  `recover` only sees a panic when the function that deferred it calls `recover` itself, so
-  `defer func() { merrors.RecoverAsError(&err) }()` lets the panic through and the process
-  dies.
-- **The panic value is in the message, and unwrapped to when it is an error.** A panicked
-  error stays reachable with `errors.Is` and `errors.As` from the standard library; anything else is in the message.
-  It is deliberately not attached with `Wrap`, which takes the stack from the wrapped error
-  whenever that error has frames of its own — so a panicked error would report where it was
-  created rather than where it was raised, which is the opposite of the point.
-- **The stack reported is the panic site**, and a panicked error that has a stack of its own
-  keeps it — unwrapping reaches it. Only one of the two can be in the report, because
-  `FormatErrorStack` stops at the first non-empty frames in the chain, and the panic site is
-  the one that cannot be recovered afterwards: it is only capturable where it is captured.
-
-If there is no panic, the error pointer keeps whatever it held.
-
-Runnable: `ExampleRecoverAsError` and `TestRecoverAsErrorKeepsExisting` in [`example/recover_test.go`](example/recover_test.go).
+`CloneBaseErrorWithAppendMessage` is an advanced helper for building a new error of the same
+custom type with an adjusted message; most callers should build the message during construction or
+use `Wrap` to add context.
 
 ## Development
 
-Requires Go 1.25 or later. Run the tests with:
+Requires Go 1.25 or later.
 
-```
+```bash
 make test
 ```
 
-Every file under `example/` is a test. The directory has no non-test Go files, so it cannot
-be imported, and `go test ./...` still compiles and runs everything in it — which is what keeps
-the examples above from drifting out of date.
-
 ## Project status
 
-A variant of this library is used at Instacart. We're publishing it so others
-can use, adapt, and build on the ideas.
+A variant of this library is used at Instacart. We're publishing it so others can use, adapt, and
+build on the ideas.
 
-This is not an officially supported Instacart product and comes with no
-commitment to ongoing maintenance. Fixes and improvements are made on a
-best-effort basis, and the repository may be archived in the future.
+This is not an officially supported Instacart product and comes with no commitment to ongoing
+maintenance. Fixes and improvements are made on a best-effort basis, and the repository may be
+archived in the future.
 
-The API is pre-1.0 and may change between minor versions; breaking changes
-will be noted in the release notes.
+The API is pre-1.0 and may change between minor versions; breaking changes will be noted in the
+release notes.
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
